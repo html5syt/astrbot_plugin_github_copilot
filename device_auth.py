@@ -1,6 +1,4 @@
 import aiohttp
-import json
-import time
 import asyncio
 from typing import Tuple, Dict
 
@@ -18,7 +16,12 @@ async def get_device_code() -> Dict:
     
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, data=data) as resp:
-            return await resp.json()
+            if resp.status != 200:
+                raise Exception(f"HTTP {resp.status} fetching device code")
+            try:
+                return await resp.json()
+            except Exception as e:
+                raise Exception("Failed to decode JSON from GitHub device code response")
 
 async def poll_access_token(device_code: str, interval: int) -> str:
     url = "https://github.com/login/oauth/access_token"
@@ -36,7 +39,13 @@ async def poll_access_token(device_code: str, interval: int) -> str:
     async with aiohttp.ClientSession() as session:
         while True:
             async with session.post(url, headers=headers, data=data) as resp:
-                res = await resp.json()
+                if resp.status != 200:
+                    raise Exception(f"HTTP {resp.status} polling access token")
+                try:
+                    res = await resp.json()
+                except Exception as e:
+                    raise Exception("Failed to decode JSON from GitHub access token response")
+                    
                 if "error" in res:
                     if res["error"] == "authorization_pending":
                         pass
