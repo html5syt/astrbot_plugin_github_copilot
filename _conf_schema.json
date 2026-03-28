@@ -1,0 +1,26 @@
+{
+  "api_host": {
+    "description": "代理服务器 Host",
+    "type": "string",
+    "default": "127.0.0.1",
+    "hint": "微型 API 代理服务器监听的地址。一般使用 127.0.0.1 即可。"
+  },
+  "api_port": {
+    "description": "代理服务器 Port",
+    "type": "int",
+    "default": 8089,
+    "hint": "微型 API 代理服务器监听的端口号。请确保该端口不被其他程序占用。"
+  },
+  "api_key": {
+    "description": "代理服务器 API Key",
+    "type": "string",
+    "default": "sk-copilot",
+    "hint": "为了安全性设置的本地代理认证密钥。在 AstrBot 的大模型提供商设置中也需要填入这个 key。"
+  },
+  "ghu_token": {
+    "description": "GitHub 授权 Token (ghu_...)",
+    "type": "string",
+    "default": "",
+    "hint": "使用 /copilot_login 指令登录后自动填写，也可以手动在此填入自己获取的以 ghu_ 开头的 token。"
+  }
+}
