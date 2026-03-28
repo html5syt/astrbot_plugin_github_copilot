@@ -1,4 +1,4 @@
-# astrbot_plugin_github_copilot
+# GitHub Copilot 接入插件
 
 将 GitHub Copilot 作为一个独立的大语言模型提供商接入 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 中。你可以通过本插件把 GitHub Copilot 作为对话模型来使用。
 
