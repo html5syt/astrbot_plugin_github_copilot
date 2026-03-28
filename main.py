@@ -16,7 +16,9 @@ class CopilotLocalServer:
         self.host = host
         self.port = port
         self.api_key = api_key
-        self.app = web.Application()
+        self.app = web.Application(
+            client_max_size=1024**2 * 100
+        )  # 100MB limit for image uploads
         self.app.router.add_post("/v1/chat/completions", self.handle_chat)
         self.app.router.add_get("/v1/models", self.handle_models)
         self.app.router.add_post("/v1/embeddings", self.handle_embeddings)
@@ -86,7 +88,8 @@ class CopilotLocalServer:
 
         try:
             req_data = await request.json()
-        except Exception:  # Broad except for python syntax robustness
+        except Exception as e:  # Broad except for python syntax robustness
+            logger.error(f"Invalid JSON payload in handle_chat: {e}")
             return web.json_response({"error": "Invalid JSON payload"}, status=400)
 
         try:
@@ -170,7 +173,8 @@ class CopilotLocalServer:
 
         try:
             req_data = await request.json()
-        except Exception:
+        except Exception as e:
+            logger.error(f"Invalid JSON payload in handle_embeddings: {e}")
             return web.json_response({"error": "Invalid JSON payload"}, status=400)
 
         try:
