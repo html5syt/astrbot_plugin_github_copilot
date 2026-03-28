@@ -17,7 +17,6 @@ class CopilotLocalServer:
         self.host = host
         self.port = port
         self.api_key = api_key
-        self.session = None
         self.app = web.Application(
             client_max_size=1024**2 * 100
         )  # 100MB limit for image uploads
@@ -28,7 +27,6 @@ class CopilotLocalServer:
         self.site = None
 
     async def start(self):
-        self.session = aiohttp.ClientSession()
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, self.host, self.port)
@@ -39,8 +37,6 @@ class CopilotLocalServer:
             await self.site.stop()
         if self.runner:
             await self.runner.cleanup()
-        if self.session:
-            await self.session.close()
 
     async def handle_models(self, request):
         try:
@@ -59,7 +55,7 @@ class CopilotLocalServer:
             "Content-Type": "application/json",
         }
 
-        async with self.session.get(
+        async with self.plugin.session.get(
             "https://api.githubcopilot.com/models",
             headers=headers,
         ) as copilot_resp:
@@ -104,7 +100,11 @@ class CopilotLocalServer:
         if is_stream:
             resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
             await resp.prepare(request)
-            async with self.session.post("https://api.githubcopilot.com/chat/completions", headers=headers, json=payload) as copilot_resp:
+            async with self.plugin.session.post(
+                "https://api.githubcopilot.com/chat/completions",
+                headers=headers,
+                json=payload,
+            ) as copilot_resp:
                 if copilot_resp.status != 200:
                     err_text = await copilot_resp.text()
                     await resp.write(f"data: {json.dumps({'error': f'Github Copilot HTTP {copilot_resp.status}: {err_text}'})}\n\n".encode("utf-8"))
@@ -115,7 +115,11 @@ class CopilotLocalServer:
                     await resp.write(line)
             return resp
         else:
-            async with self.session.post("https://api.githubcopilot.com/chat/completions", headers=headers, json=payload) as copilot_resp:
+            async with self.plugin.session.post(
+                "https://api.githubcopilot.com/chat/completions",
+                headers=headers,
+                json=payload,
+            ) as copilot_resp:
                 if copilot_resp.status != 200:
                     return web.json_response({"error": f"HTTP {copilot_resp.status}: {await copilot_resp.text()}"}, status=copilot_resp.status)
                 return web.json_response(await copilot_resp.json())
@@ -206,7 +210,7 @@ class CopilotLocalServer:
             "embedding_model": target_model,
         }
 
-        async with self.session.post(
+        async with self.plugin.session.post(
             "https://api.github.com/embeddings",
             headers=headers,
             json=payload,
@@ -326,7 +330,7 @@ class GithubCopilotPlugin(Star):
         """通过设备授权(Device Auth)获取 GitHub Copilot 凭据"""
         yield event.plain_result("正在初始化 GitHub 授权流程，请稍候...")
         try:
-            device_info = await get_device_code()
+            device_info = await get_device_code(self.session)
             user_code = device_info.get("user_code")
             ver_uri = device_info.get("verification_uri")
             interval = device_info.get("interval", 5)
@@ -337,7 +341,7 @@ class GithubCopilotPlugin(Star):
             )
 
             github_token = await asyncio.wait_for(
-                poll_access_token(device_code, interval), timeout=900
+                poll_access_token(self.session, device_code, interval), timeout=900
             )
 
             # 保存到配置
@@ -351,6 +355,7 @@ class GithubCopilotPlugin(Star):
             yield event.plain_result("❌ 授权超时。如果需要请重新触发指令。")
         except Exception as e:
             yield event.plain_result(f"❌ 授权中发生错误: {str(e)}")
+
 
     async def _fetch_user_quota(self, ghu_token: str):
         headers_user = {
