@@ -363,115 +363,108 @@ class GithubCopilotPlugin(Star):
 
         yield event.plain_result("正在查询 GitHub Copilot 订阅状态，请稍后...")
 
-        success, result = await self._fetch_copilot_token_info(ghu_token)
-        if not success:
-            yield event.plain_result(f"❌ 查询失败，Token 可能已失效。\n原因: {result}")
-            return
+        headers_user = {
+            "Authorization": f"token {ghu_token}"
+            if ghu_token.startswith("gho_")
+            else f"Bearer {ghu_token}",
+            "Accept": "application/json",
+            "User-Agent": "GitHubCopilotChat/0.35.0",
+            "Editor-Version": "vscode/1.107.0",
+            "Editor-Plugin-Version": "copilot-chat/0.35.0",
+        }
 
-        sku = result.get("sku", "Unknown")
-        user = result.get("user", "Unknown")
-        chat_enabled = result.get("chat_enabled", False)
-        expires_at = result.get("expires_at", 0)
-        formatted_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires_at))
+        user_info = {"user": "Unknown", "sku": "Unknown", "chat_enabled": False}
+        limits_info = []
 
-        advanced_limits_str = "🔍 额度返回异常或未强制拦截"
         try:
-            # 1. 尝试从 /copilot_internal/user 接口直接获取更准确的配额数据 (如学生版的 premium_interactions)
-            headers_user = {
-                "Authorization": f"token {ghu_token}"
-                if ghu_token.startswith("gho_")
-                else f"Bearer {ghu_token}",
-                "Accept": "application/json",
-                "User-Agent": "GitHubCopilotChat/0.35.0",
-                "Editor-Version": "vscode/1.107.0",
-                "Editor-Plugin-Version": "copilot-chat/0.35.0",
-            }
-
-            limits_info = []
-
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     "https://api.github.com/copilot_internal/user", headers=headers_user
                 ) as user_resp:
                     if user_resp.status == 200:
                         user_data = await user_resp.json()
-                        quota_snapshots = user_data.get("quota_snapshots", {})
-
-                        # 核心解析: 解析 user_data 里的高级请求限制与基础请求限制
-                        premium = quota_snapshots.get("premium_interactions", {})
-                        chat = quota_snapshots.get("chat", {})
-
-                        if chat:
-                            if chat.get("unlimited"):
-                                limits_info.append("基础请求(Core): 无限制 (Unlimited)")
-                            else:
-                                limits_info.append(
-                                    f"基础请求(Core): {chat.get('entitlement', 0) - chat.get('remaining', 0)} / {chat.get('entitlement', 0)} (剩余 {chat.get('remaining', 0)})"
-                                )
-                        else:
-                            limits_info.append("基础请求(Core): 无限制 (Unlimited)")
-
-                        if premium:
-                            if premium.get("unlimited"):
-                                limits_info.append(
-                                    "高级请求(Advanced): 无限制 (Unlimited)"
-                                )
-                            else:
-                                limits_info.append(
-                                    f"高级请求(Advanced): {premium.get('entitlement', 0) - premium.get('remaining', 0)} / {premium.get('entitlement', 0)} (剩余 {premium.get('remaining', 0)})"
-                                )
-                        else:
-                            limits_info.append(
-                                "高级请求(Advanced): 无限制 (Unlimited 或当前接口未返回)"
-                            )
-
-                        reset_date = user_data.get("quota_reset_date")
-                        if reset_date:
-                            limits_info.append(f"配额重置时间: {reset_date}")
-
-            # 2. 如果因为某些原因无法从 user 接口读出，降级读取 /models 头的 ratelimit
-            if not limits_info:
-                temp_token = result.get("token")
-                headers_models = {
-                    "Authorization": f"Bearer {temp_token}",
-                    "User-Agent": "GitHubCopilotChat/0.35.0",
-                    "Editor-Version": "vscode/1.107.0",
-                    "Editor-Plugin-Version": "copilot-chat/0.35.0",
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        "https://api.githubcopilot.com/models", headers=headers_models
-                    ) as models_resp:
-                        hw = lambda k: models_resp.headers.get(k)
-
-                        a_rem = hw(
-                            "x-ratelimit-user-chat-advanced-requests-remaining"
-                        ) or hw("x-ratelimit-user-advanced-remaining")
-                        a_tot = hw(
-                            "x-ratelimit-user-chat-advanced-requests-limit"
-                        ) or hw("x-ratelimit-user-advanced-limit")
-                        c_rem = hw(
-                            "x-ratelimit-user-chat-core-requests-remaining"
-                        ) or hw("x-ratelimit-user-core-remaining")
-                        c_tot = hw("x-ratelimit-user-chat-core-requests-limit") or hw(
-                            "x-ratelimit-user-core-limit"
+                        user_info.update(
+                            {
+                                "user": user_data.get("login", "Unknown"),
+                                "sku": user_data.get("access_type_sku", "Unknown"),
+                                "chat_enabled": user_data.get("chat_enabled", False),
+                            }
                         )
 
-                        if c_tot is not None and c_rem is not None:
-                            limits_info.append(
-                                f"基础请求(Core): {int(c_tot) - int(c_rem)} / {c_tot} (剩余 {c_rem})"
-                            )
-                        else:
-                            limits_info.append("基础请求(Core): 无限制 (Unlimited)")
+                        quota = user_data.get("quota_snapshots", {})
+                        for key, label in [
+                            ("chat", "基础请求(Core)"),
+                            ("premium_interactions", "高级请求(Advanced)"),
+                        ]:
+                            q_data = quota.get(key, {})
+                            if not q_data:
+                                limits_info.append(
+                                    f"{label}: 无限制 (Unlimited 或当前接口未返回)"
+                                )
+                            elif q_data.get("unlimited"):
+                                limits_info.append(f"{label}: 无限制 (Unlimited)")
+                            else:
+                                total, remaining = (
+                                    q_data.get("entitlement", 0),
+                                    q_data.get("remaining", 0),
+                                )
+                                limits_info.append(
+                                    f"{label}: {total - remaining} / {total} (剩余 {remaining})"
+                                )
 
-                        if a_tot is not None and a_rem is not None:
-                            limits_info.append(
-                                f"高级请求(Advanced): {int(a_tot) - int(a_rem)} / {a_tot} (剩余 {a_rem})"
-                            )
-                        else:
-                            limits_info.append(
-                                "高级请求(Advanced): 无限制 (Unlimited 或当前接口未返回)"
-                            )
+                        if reset_date := user_data.get("quota_reset_date"):
+                            limits_info.append(f"配额重置时间: {reset_date}")
+
+            if not limits_info or user_info["user"] == "Unknown":
+                success, result = await self._fetch_copilot_token_info(ghu_token)
+                if not success:
+                    yield event.plain_result(
+                        f"❌ 查询失败，Token 可能已失效。\n原因: {result}"
+                    )
+                    return
+
+                user_info.update(
+                    {
+                        "sku": result.get("sku", "Unknown"),
+                        "user": result.get("user", "Unknown"),
+                        "chat_enabled": result.get("chat_enabled", False),
+                    }
+                )
+
+                if not limits_info:
+                    headers_models = {
+                        "Authorization": f"Bearer {result.get('token')}",
+                        "User-Agent": "GitHubCopilotChat/0.35.0",
+                        "Editor-Version": "vscode/1.107.0",
+                        "Editor-Plugin-Version": "copilot-chat/0.35.0",
+                    }
+                    async with aiohttp.ClientSession() as fallback_session:
+                        async with fallback_session.get(
+                            "https://api.githubcopilot.com/models",
+                            headers=headers_models,
+                        ) as models_resp:
+                            hw = lambda k: models_resp.headers.get(k)
+
+                            limits_to_check = [
+                                ("基础请求(Core)", "core"),
+                                ("高级请求(Advanced)", "advanced"),
+                            ]
+                            for label, kind in limits_to_check:
+                                rem = hw(
+                                    f"x-ratelimit-user-chat-{kind}-requests-remaining"
+                                ) or hw(f"x-ratelimit-user-{kind}-remaining")
+                                tot = hw(
+                                    f"x-ratelimit-user-chat-{kind}-requests-limit"
+                                ) or hw(f"x-ratelimit-user-{kind}-limit")
+
+                                if rem is not None and tot is not None:
+                                    limits_info.append(
+                                        f"{label}: {int(tot) - int(rem)} / {tot} (剩余 {rem})"
+                                    )
+                                else:
+                                    limits_info.append(
+                                        f"{label}: 无限制 (Unlimited 或当前接口未返回)"
+                                    )
 
             advanced_limits_str = "\n".join(["🚀 " + item for item in limits_info])
 
@@ -480,11 +473,10 @@ class GithubCopilotPlugin(Star):
 
         msg = (
             "👩‍💻 **GitHub Copilot 状态信息**\n"
-            f"👤 用户/标识：{user}\n"
-            f"📦 订阅类型：{sku}\n"
+            f"👤 用户：{user_info['user']}\n"
+            f"📦 订阅类型：{user_info['sku']}\n"
             f"{advanced_limits_str}\n"
-            f"💬 Chat权限：{'✅ 允许' if chat_enabled else '❌ 拒绝'}\n"
-            f"⏳ 内部有效至：{formatted_time}"
+            f"💬 Chat权限：{'✅ 允许' if user_info['chat_enabled'] else '❌ 拒绝'}"
         )
         yield event.plain_result(msg)
 

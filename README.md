@@ -2,6 +2,8 @@
 
 将 GitHub Copilot 作为一个独立的大语言模型提供商接入 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 中。你可以通过本插件把 GitHub Copilot 作为对话模型来使用。
 
+> **注意**：本插件需要你拥有一个有效的 GitHub Copilot 订阅，**且不能用于高频请求，否则会被限制请求速率或封号！**
+
 ## 特性
 - ✅ **代理转接**：内部提供一个微型 OpenAI 兼容 API 服务器，收发转接请求，自由配置端口和 Key。
 - ✅ **流式输出**：原生兼容大模型流式（Streaming）对话模式。
