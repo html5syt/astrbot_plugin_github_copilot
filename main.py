@@ -42,6 +42,7 @@ class CopilotLocalServer:
         try:
             token = await self.plugin.get_session_token()
         except Exception as e:
+            logger.error(f"Failed to acquire Copilot internal token: {e}")
             return web.json_response(
                 {"error": f"Failed to acquire Copilot internal token: {e}"}, status=401
             )
@@ -60,10 +61,12 @@ class CopilotLocalServer:
             headers=headers,
         ) as copilot_resp:
                 if copilot_resp.status != 200:
+                    err_text = await copilot_resp.text()
+                    logger.error(
+                        f"Github Copilot /models error: HTTP {copilot_resp.status} - {err_text}"
+                    )
                     return web.json_response(
-                        {
-                            "error": f"HTTP {copilot_resp.status}: {await copilot_resp.text()}"
-                        },
+                        {"error": f"HTTP {copilot_resp.status}: {err_text}"},
                         status=copilot_resp.status,
                     )
                 data = await copilot_resp.json()
@@ -85,6 +88,7 @@ class CopilotLocalServer:
         try:
             token = await self.plugin.get_session_token()
         except Exception as e:
+            logger.error(f"Failed to acquire Copilot internal token: {e}")
             return None, web.json_response({"error": f"Failed to acquire Copilot internal token: {e}"}, status=401)
 
         return {
@@ -107,6 +111,9 @@ class CopilotLocalServer:
             ) as copilot_resp:
                 if copilot_resp.status != 200:
                     err_text = await copilot_resp.text()
+                    logger.error(
+                        f"Github Copilot /chat/completions (stream) error: HTTP {copilot_resp.status} - {err_text}"
+                    )
                     await resp.write(f"data: {json.dumps({'error': f'Github Copilot HTTP {copilot_resp.status}: {err_text}'})}\n\n".encode("utf-8"))
                     await resp.write(b"data: [DONE]\n\n")
                     return resp
@@ -121,7 +128,14 @@ class CopilotLocalServer:
                 json=payload,
             ) as copilot_resp:
                 if copilot_resp.status != 200:
-                    return web.json_response({"error": f"HTTP {copilot_resp.status}: {await copilot_resp.text()}"}, status=copilot_resp.status)
+                    err_text = await copilot_resp.text()
+                    logger.error(
+                        f"Github Copilot /chat/completions error: HTTP {copilot_resp.status} - {err_text}"
+                    )
+                    return web.json_response(
+                        {"error": f"HTTP {copilot_resp.status}: {err_text}"},
+                        status=copilot_resp.status,
+                    )
                 return web.json_response(await copilot_resp.json())
 
     async def handle_chat(self, request):
@@ -156,99 +170,111 @@ class CopilotLocalServer:
         return await self._proxy_chat_request(headers, payload, payload["stream"], request)
 
     async def handle_embeddings(self, request):
-        auth = request.headers.get("Authorization", "")
-        if self.api_key and auth != f"Bearer {self.api_key}":
-            return web.json_response({"error": "Unauthorized proxy access"}, status=401)
-
         try:
-            req_data = await request.json()
-        except Exception as e:
-            logger.error(f"Invalid JSON payload in handle_embeddings: {e}")
-            return web.json_response({"error": "Invalid JSON payload"}, status=400)
-
-        try:
-            ghu_token = self.plugin.config.get("ghu_token", "")
-            if not ghu_token:
-                raise ValueError("No GitHub token configured")
-        except Exception as e:
-            return web.json_response(
-                {"error": f"Failed to acquire GitHub token: {e}"}, status=401
-            )
-
-        headers = {
-            "Authorization": f"Bearer {ghu_token}",
-            "User-Agent": "GitHubCopilotChat/0.41.2",
-            "x-client-application": "vscode/1.113.0",
-            "x-client-source": "copilot-chat/0.41.2",
-            "x-github-api-version": "2025-05-01",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-
-        # Adapt payload from OpenAI format to internal exact payload format
-        input_data = req_data.get("input", "")
-        # GitHub expects an array for 'inputs'
-        if isinstance(input_data, str):
-            inputs_list = [input_data]
-        else:
-            inputs_list = input_data
-
-        target_model = req_data.get("model", "text-embedding-3-small-512")
-        # 兼容处理: 如果传来的是不支持的模型名, fallback
-        safe_models = [
-            "text-embedding-ada-002",
-            "text-embedding-3-small",
-            "text-embedding-3-large",
-            "text-embedding-3-small-512",
-        ]
-        if target_model not in safe_models:
-            target_model = "text-embedding-3-small-512"
-
-        payload = {
-            "inputs": inputs_list,
-            "input_type": "document",
-            "embedding_model": target_model,
-        }
-
-        async with self.plugin.session.post(
-            "https://api.github.com/embeddings",
-            headers=headers,
-            json=payload,
-        ) as copilot_resp:
-            if copilot_resp.status != 200:
-                err_text = await copilot_resp.text()
-                # defensive check: limit err text returned if it's giant html
-                if len(err_text) > 500:
-                    err_text = err_text[:500] + "... [truncated]"
+            auth = request.headers.get("Authorization", "")
+            if self.api_key and auth != f"Bearer {self.api_key}":
                 return web.json_response(
-                    {
-                        "error": f"HTTP {copilot_resp.status}: {err_text}"
-                    },
-                    status=copilot_resp.status,
+                    {"error": "Unauthorized proxy access"}, status=401
                 )
-            
+
             try:
-                data = await copilot_resp.json()
+                req_data = await request.json()
             except Exception as e:
-                err_text = await copilot_resp.text()
-                if len(err_text) > 500:
-                    err_text = err_text[:500] + "... [truncated]"
+                logger.error(f"Invalid JSON payload in handle_embeddings: {e}")
+                return web.json_response({"error": "Invalid JSON payload"}, status=400)
+
+            try:
+                ghu_token = self.plugin.config.get("ghu_token", "")
+                if not ghu_token:
+                    raise ValueError("No GitHub token configured")
+            except Exception as e:
                 return web.json_response(
-                    {"error": f"Failed to parse JSON response. HTTP {copilot_resp.status}. Content: {err_text}"},
-                    status=502
+                    {"error": f"Failed to acquire GitHub token: {e}"}, status=401
                 )
 
-                # Convert response shape from GitHub format to OpenAI standard expected Format
-                # github returns: {"embeddings": [{"embedding": [...], "index": 0}]}
-                # openai expects: {"object": "list", "data": [{"object": "embedding", "embedding": [...], "index": 0}]}
-                resp_payload = {"object": "list", "data": [], "model": target_model}
+            headers = {
+                "Authorization": f"Bearer {ghu_token}",
+                "User-Agent": "GitHubCopilotChat/0.41.2",
+                "x-client-application": "vscode/1.113.0",
+                "x-client-source": "copilot-chat/0.41.2",
+                "x-github-api-version": "2025-05-01",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
 
-                if "embeddings" in data:
-                    for item in data["embeddings"]:
-                        item.setdefault("object", "embedding")
-                        resp_payload["data"].append(item)
+            # Adapt payload from OpenAI format to internal exact payload format
+            input_data = req_data.get("input", "")
+            # GitHub expects an array for 'inputs'
+            if isinstance(input_data, str):
+                inputs_list = [input_data]
+            else:
+                inputs_list = input_data
 
-                return web.json_response(resp_payload)
+            target_model = req_data.get("model", "text-embedding-3-small-512")
+            # 兼容处理: 如果传来的是不支持的模型名, fallback
+            safe_models = [
+                "text-embedding-ada-002",
+                "text-embedding-3-small",
+                "text-embedding-3-large",
+                "text-embedding-3-small-512",
+            ]
+            if target_model not in safe_models:
+                target_model = "text-embedding-3-small-512"
+
+            payload = {
+                "inputs": inputs_list,
+                "input_type": "document",
+                "embedding_model": target_model,
+            }
+
+            async with self.plugin.session.post(
+                "https://api.github.com/embeddings",
+                headers=headers,
+                json=payload,
+            ) as copilot_resp:
+                if copilot_resp.status != 200:
+                    err_text = await copilot_resp.text()
+                    logger.error(
+                        f"Github Copilot /embeddings error: HTTP {copilot_resp.status} - {err_text}"
+                    )
+                    # defensive check: limit err text returned if it's giant html
+                    if len(err_text) > 500:
+                        err_text = err_text[:500] + "... [truncated]"
+                    return web.json_response(
+                        {"error": f"HTTP {copilot_resp.status}: {err_text}"},
+                        status=copilot_resp.status,
+                    )
+
+                try:
+                    data = await copilot_resp.json()
+                except Exception as e:
+                    err_text = await copilot_resp.text()
+                    if len(err_text) > 500:
+                        err_text = err_text[:500] + "... [truncated]"
+                    return web.json_response(
+                        {
+                            "error": f"Failed to parse JSON response. HTTP {copilot_resp.status}. Content: {err_text}"
+                        },
+                        status=502,
+                    )
+
+            # Convert response shape from GitHub format to OpenAI standard expected Format
+            # github returns: {"embeddings": [{"embedding": [...], "index": 0}]}
+            # openai expects: {"object": "list", "data": [{"object": "embedding", "embedding": [...], "index": 0}]}
+            resp_payload = {"object": "list", "data": [], "model": target_model}
+
+            if "embeddings" in data:
+                for item in data["embeddings"]:
+                    item.setdefault("object", "embedding")
+                    resp_payload["data"].append(item)
+
+            return web.json_response(resp_payload)
+
+        except Exception as e:
+            logger.error(f"Error handling embeddings request: {e}", exc_info=True)
+            return web.json_response(
+                {"error": f"Internal server error: {e}"}, status=500
+            )
 
 
 @register(
